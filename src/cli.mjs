@@ -16,6 +16,7 @@
 import { promises as fsp } from "fs";
 import { compile } from "./compiler.mjs";
 import commander from "commander";
+import { relative as _relative } from "path";
 
 const program = new commander.Command();
 program
@@ -25,7 +26,12 @@ program
   .option("--hex-output", "Turn std out into hexadecimap")
   .option("--asyncify", "Run Binaryen Asyncify pass")
   .option("--wasi", "Use WASI for I/O")
+  .option("--source-map [file]", "Generate source maps (specify 'inline' for inline maps)")
   .parse(process.argv);
+
+function relative(from, to) {
+  return _relative(from + "/..", to).replace(/\\/g, "/");
+}
 
 (async function run() {
   if (program.args.length !== 1) {
@@ -38,12 +44,44 @@ program
     process.exit(1);
   }
 
-  const input = await fsp.readFile(program.args[0], "utf8");
-  let wasm = compile(input, {
-    useWasi: program.wasi
+  if (program.run) {
+    program.asyncify = true;
+  }
+
+  const input = program.args[0];
+
+  let sourceMapOpts = {};
+  if (program.sourceMap) {
+    if (program.asyncify) {
+      console.error("Asyncify currently cannot be used with source maps.");
+      process.exit(1);
+    }
+    if (program.sourceMap === "inline") {
+      sourceMapOpts = {
+        sourceMap: "inline",
+        source: relative(program.output, input)
+      };
+    } else if (program.output) {
+      if (program.sourceMap === true) {
+        program.sourceMap = `${program.output}.map`;
+      }
+      sourceMapOpts = {
+        sourceMap: relative(program.output, program.sourceMap),
+        source: relative(program.sourceMap, input)
+      };
+    } else {
+      console.error("Non-inline source maps cannot be generated without an output.");
+      process.exit(1);
+    }
+  }
+
+  const source = await fsp.readFile(input, "utf8");
+  let { wasm, map } = compile(source, {
+    useWasi: program.wasi,
+    ...sourceMapOpts
   });
 
-  if (program.asyncify || program.run) {
+  if (program.run) {
     const { default: Binaryen } = await import("binaryen");
     const module = Binaryen.readBinary(new Uint8Array(wasm));
     Binaryen.setOptimizeLevel(0);
@@ -54,6 +92,10 @@ program
 
   if (program.output) {
     await fsp.writeFile(program.output, Buffer.from(wasm));
+  }
+
+  if (map) {
+    await fsp.writeFile(program.sourceMap, JSON.stringify(map));
   }
 
   const asyncifyStart = 60000;

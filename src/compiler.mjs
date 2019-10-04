@@ -13,6 +13,7 @@
 
 import { leb128, toUTF8, vector, section, instr } from "./wasm-helpers.mjs";
 import * as i from "./wasm-instructions.mjs";
+import { base64vlq } from "./wasm-helpers.mjs";
 
 const defaultOpts = {
   exportMemory: true,
@@ -137,10 +138,11 @@ export function compile(bf, userOpts = {}) {
   ]);
 
   const codeGenTable = createCodeGenTable(funcs, numImportFuncs);
-  const code = [...bf].flatMap(c => codeGenTable[c] || []);
+  const codeItems = Array.from(bf, c => codeGenTable[c] || []);
+  const code = codeItems.flat();
   const funcNameSection = createFuncNameSection(funcs);
 
-  return new Uint8Array([
+  let out = [
     ...toUTF8("\0asm"), // Magic
     ...[1, 0, 0, 0], // Version
     ...section(
@@ -319,6 +321,12 @@ export function compile(bf, userOpts = {}) {
         ]
       ])
     ),
+  ];
+
+  const codeOffset = out.length - 1 - code.length;
+
+  out = [
+    ...out,
     ...section(
       0, // Custom section
       [
@@ -330,5 +338,75 @@ export function compile(bf, userOpts = {}) {
         )
       ]
     )
-  ]).buffer;
+  ];
+
+  let map = null;
+
+  if (opts.sourceMap) {
+    let mappings = '';
+
+    let prev = {
+      offset: 0,
+      file: 0,
+      line: 0,
+      column: 0,
+    };
+
+    let cur = {
+      offset: codeOffset,
+      file: 0,
+      line: 0,
+      column: 0,
+    };
+
+    for (let i = 0; i < bf.length; i++) {
+      const { length } = codeItems[i];
+
+      if (length !== 0) {
+        if (mappings) mappings += ',';
+
+        for (const key in cur) {
+          mappings += base64vlq(cur[key] - prev[key]);
+          prev[key] = cur[key];
+        }
+
+        cur.offset += length;
+      }
+
+      if (bf[i] === '\n') {
+        cur.line++;
+        cur.column = 0;
+      } else {
+        cur.column++;
+      }
+    }
+
+    map = {
+      version: 3,
+      sources: [opts.source],
+      mappings
+    };
+
+    let { sourceMap } = opts;
+    if (sourceMap === 'inline') {
+      sourceMap = `data:application/json,${JSON.stringify(map)}`;
+      map = null;
+    }
+
+    out = [
+      ...out,
+      ...section(
+        0, // Custom section
+        [
+          ...vector(toUTF8("sourceMappingURL")),
+          ...vector(toUTF8(sourceMap))
+        ]
+      )
+    ];
+  }
+
+  return {
+    wasm: new Uint8Array(out).buffer,
+    map
+  };
 }

@@ -41,3 +41,27 @@ export function section(idx, data) {
 export function vector(items) {
   return [...leb128(items.length), ...items.flat()];
 }
+
+// Adapted version from
+// https://github.com/Rich-Harris/vlq/blob/master/src/vlq.ts
+export function base64vlq(num) {
+  const BASE64 =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+
+  let result = "";
+
+  if (num < 0) {
+    num = (-num << 1) | 1;
+  } else {
+    num <<= 1;
+  }
+
+  do {
+    let clamped = num & 31;
+    num >>>= 5;
+    if (num > 0) clamped |= 32;
+    result += BASE64[clamped];
+  } while (num > 0);
+
+  return result;
+}
